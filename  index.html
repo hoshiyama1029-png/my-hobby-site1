@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>占心 — Fortune Match</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// ---------------------------------------------------------------------------
+// マヤ暦(ツォルキン暦)占い: 生年月日だけで「太陽の紋章(20種)」×「銀河の音(13種)」の
+// 組み合わせ(KIN1〜260)を算出し、そこから運勢・相性を判定する。
+// ---------------------------------------------------------------------------
+const MAX_CAPACITY = 30;
+
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function daysInMonth(year, month) {
+  if (!year || !month) return 31;
+  if (parseInt(month, 10) === 2 && isLeapYear(parseInt(year, 10))) return 29;
+  return MONTH_DAYS[parseInt(month, 10) - 1];
+}
+const { useState, useEffect, useRef } = React;
+const CURRENT_YEAR = new Date().getFullYear();
+const YEAR_OPTIONS = Array.from({ length: 90 }, (_, i) => CURRENT_YEAR - i);
+
+function parseBirthdate(dateStr) {
+  if (!dateStr) return null;
+  const [yStr, mStr, dStr] = dateStr.split("-");
+  return { year: parseInt(yStr, 10), month: parseInt(mStr, 10), day: parseInt(dStr, 10) };
+}
+function formatBirthdate(dateStr) {
+  const p = parseBirthdate(dateStr);
+  if (!p) return "";
+  return `${p.year}年${p.month}月${p.day}日`;
+}
+
+// 生年月日から「その年を365日固定」とみなした通算日数を求める。
+// 一般的なマヤ暦KIN早見表はうるう年をまたいでも365日/年で計算されているため、
+// この方式に合わせることで実際の早見表・計算例と一致する。
+const NONLEAP_CUM_DAYS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+function pseudoAbsoluteDay(year, month, day) {
+  return year * 365 + NONLEAP_CUM_DAYS[month - 1] + day;
+}
+
+// マヤ暦(ツォルキン)のKINナンバー(1〜260)を算出する。
+// 基準日: 1975年3月3日 = KIN189(複数の公開されているマヤ暦KIN計算例と照合して校正済み)
+function kinFromDate(year, month, day) {
+  const REF_ABS = pseudoAbsoluteDay(1975, 3, 3);
+  const REF_KIN_INDEX0 = 188; // KIN189の0始まりインデックス
+  const diff = pseudoAbsoluteDay(year, month, day) - REF_ABS;
+  const idx0 = (((REF_KIN_INDEX0 + diff) % 260) + 260) % 260;
+  return idx0 + 1; // 1〜260
+}
+
+// 20種類の太陽の紋章
+const DAY_SIGNS = [
+  "赤い龍", "白い風", "青い夜", "黄色い種", "赤い蛇",
+  "白い世界の橋渡し", "青い手", "黄色い星", "赤い月", "白い犬",
+  "青い猿", "黄色い人", "赤い空歩く人", "白い魔法使い", "青い鷲",
+  "黄色い戦士", "赤い地球", "白い鏡", "青い嵐", "黄色い太陽",
+];
+const DAY_SIGN_VECTORS = [
+  [6, 5, 6, 7], [5, 8, 3, 7], [4, 6, 5, 9], [5, 7, 6, 6], [8, 5, 4, 5],
+  [4, 7, 7, 4], [6, 6, 7, 6], [5, 5, 4, 9], [5, 4, 5, 8], [4, 4, 8, 5],
+  [7, 6, 3, 9], [4, 6, 8, 5], [7, 7, 6, 5], [3, 8, 4, 8], [6, 9, 5, 6],
+  [8, 7, 3, 4], [7, 6, 8, 4], [5, 8, 6, 3], [9, 4, 3, 7], [8, 6, 7, 8],
+];
+
+// 13種類の銀河の音
+const TONES = [
+  "磁気", "月", "電気", "自己存在", "倍音", "律動", "共振",
+  "銀河", "太陽", "惑星", "光速", "水晶", "宇宙",
+];
+const TONE_VECTORS = [
+  [7, 5, 4, 4], [3, 4, 7, 5], [8, 5, 3, 4], [4, 7, 8, 3], [7, 6, 5, 6],
+  [4, 5, 9, 4], [5, 6, 5, 7], [6, 7, 6, 5], [8, 4, 5, 6], [7, 5, 7, 4],
+  [4, 8, 3, 7], [5, 8, 6, 6], [6, 6, 4, 8],
+];
+
+function mayaInfo(year, month, day) {
+  const kin = kinFromDate(year, month, day);
+  const toneIdx = (kin - 1) % 13;
+  const daySignIdx = (kin - 1) % 20;
+  return { kin, toneIdx, daySignIdx };
+}
+function mayaVector(toneIdx, daySignIdx) {
+  const t = TONE_VECTORS[toneIdx];
+  const d = DAY_SIGN_VECTORS[daySignIdx];
+  return t.map((v, i) => (v + d[i]) / 2);
+}
+
+function mulberry32(seed) {
+  let a = seed;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function matchPercent(vecA, vecB) {
+  const distSq = vecA.reduce((sum, v, i) => sum + (v - vecB[i]) ** 2, 0);
+  const dist = Math.sqrt(distSq);
+  const score = 99 - dist * 2.4;
+  return Math.max(50, Math.min(99, Math.round(score)));
+}
+
+// 登録されているお客様の中からTOP3を選ぶ。
+// 実際のお客様(サンプル以外)が3人以上いればサンプルは候補から外し、
+// 3人未満の場合はサンプルも候補に含めつつ、必ず実際のお客様より下位に表示する。
+function computeTop3(target, pool) {
+  const others = pool.filter((a) => a.id !== target.id);
+  const realOthers = others.filter((a) => !a.isSample);
+  const sampleOthers = others.filter((a) => a.isSample);
+  const candidates = realOthers.length >= 3 ? realOthers : [...realOthers, ...sampleOthers];
+
+  return candidates
+    .map((a) => ({ ...a, score: matchPercent(target.vec, a.vec) }))
+    .sort((a, b) => {
+      if (a.isSample !== b.isSample) return a.isSample ? 1 : -1;
+      return b.score - a.score;
+    })
+    .slice(0, 3);
+}
+
+// 運勢テキストのテンプレート(恋愛運・仕事運・金銭運・対人関係)。それぞれ100文字程度。
+const LOVE_TEMPLATES = [
+  "自分の気持ちに素直に、情熱的にアプローチすることで良い流れが生まれやすい時期です。多少の勇気が必要でも、思い切って一歩踏み出すことで関係が大きく前進していく可能性があります。",
+  "焦らずじっくりと関係を育てていくことで、安定した信頼関係が少しずつ育っていく時期です。すぐに答えを求めず、時間をかけて相手と向き合う姿勢が良い結果につながります。",
+  "会話が自然と弾む相手との距離が縮まりやすい、心地よいコミュニケーションの時期です。共通の話題を見つけることで、思っている以上に打ち解けやすいタイミングと言えるでしょう。",
+  "無理に距離を詰めようとせず、自然な距離感を大切にすることで心地よい関係が育っていく時期です。お互いのペースを尊重する姿勢が、長続きする関係につながっていきます。",
+  "深く一途な気持ちがしっかりと相手に伝わりやすい時期です。多くを語らなくても、日頃の行動や態度が誠実さとして伝わり、関係を着実に深めていくきっかけになるでしょう。",
+  "自由な雰囲気やお互いの時間を大切にする相手との相性が良い時期です。束縛せず程よい距離感を保つことで、心地よく安定した関係を築いていきやすいタイミングと言えます。",
+  "すぐに結果を求めず、時間をかけて信頼を積み重ねていくことで関係が育つ時期です。焦らず誠実に向き合う姿勢が、後々になって大きな安心感として返ってくるでしょう。",
+  "ロマンチックな雰囲気が自然と生まれやすい、感受性が豊かになる時期です。ちょっとした演出やタイミングを大切にすることで、思い出に残るような時間を過ごしやすいでしょう。",
+];
+const WORK_TEMPLATES = [
+  "新しい挑戦に前向きに飛び込むことで、これまで手が届かなかったチャンスが向こうから舞い込んでくる時期です。周囲より一歩早く決断し、勢いのまま行動に移すことで、大きな成果につながっていくでしょう。",
+  "コツコツと積み上げてきた努力が、ここへきてようやく周囲から正しく評価されるタイミングです。焦らず今のペースを守りながら、目の前の仕事に丁寧に取り組むことで、着実に信頼と実績を積み重ねていけます。",
+  "一人で抱え込まず周囲と協力することで、思っている以上に大きな成果につながりやすい時期です。チームでの取り組みが評価され、あなた自身の頑張りもきちんと周囲の目に留まっていくでしょう。",
+  "あなたらしい発想やアイデアが注目を集め、これまでにない新しい風を仕事に吹き込めるタイミングです。多少の遠慮は捨てて、思いついたことを積極的に発信してみると良い流れにつながります。",
+  "細やかな気配りや目立たない努力が、少しずつではありますが確実に周囲からの信頼につながっていく時期です。目の前の小さな仕事も丁寧にこなすことで、着実にキャリアの土台が築かれていきます。",
+  "一つのことにじっくり集中して取り組むことで、思いのほか大きな成果を手にしやすいタイミングです。あれこれ手を広げるより、今抱えているテーマを深く掘り下げることが結果につながります。",
+  "地道な努力を続けてきたことが、時間はかかっても着実に評価へとつながっていく時期です。派手さはなくても、コツコツ積み上げてきた実績があなたの強みとして周囲に伝わっていくでしょう。",
+  "情報収集力と柔軟な対応力を活かすことで、新しい仕事のチャンスを自然につかみやすい時期です。多方面にアンテナを張っておくことで、思わぬところから良い話が舞い込んでくるでしょう。",
+];
+const MONEY_TEMPLATES = [
+  "気持ちが盛り上がりやすく、つい財布のひもが緩みがちな時期ですが、そのぶん行動力を上手く活かせれば、収入アップという形で還元されやすいタイミングでもあります。衝動買いにだけ気をつけましょう。",
+  "堅実な金銭感覚がこれまで以上に発揮され、貯えが順調に増えていきやすい時期です。大きな一発を狙うより、コツコツ積み立てるスタイルの方が結果的に安心感につながっていくでしょう。",
+  "普段の出費を見直すことで、思っていた以上に着実に金運が整っていく時期です。何にお金を使っているのか一度棚卸ししてみると、無駄に気づきやすく改善もしやすいタイミングです。",
+  "大きく動かすよりも、これまでに得た成果や貯えをしっかり守ることが吉と出る時期です。新しい投資や大きな出費は少し慎重に構え、今あるものを大切にする姿勢が安定につながります。",
+  "従来とは違う方法やアイデアを試してみることで、金運が思わぬ形で動きやすい時期です。いつもと違うやり方を取り入れてみると、新しいチャンスにつながっていく可能性があります。",
+  "計画的にお金を使う姿勢がしっかりと功を奏し、資産が少しずつ安定していきやすい時期です。目先の欲より長い目で見た使い方を意識することで、後々の安心につながっていきます。",
+  "身近な人のための出費が増えつつも、それが巡り巡って自分自身の安定にもつながっていく時期です。人とのつながりを大切にする姿勢が、結果的に良い金運を引き寄せてくれるでしょう。",
+  "浪費にさえ気をつければ、日頃の優しさや気配りが巡り巡って金運として返ってきやすい時期です。人に対する思いやりを大切にすることで、自然と良い流れが生まれていきます。",
+];
+const RELATIONSHIP_TEMPLATES = [
+  "周囲との協調がスムーズにいきやすく、自然と輪の中心にいられるような時期です。困っている人に手を差し伸べることで、思わぬ形で感謝され、良い人間関係が広がっていくでしょう。",
+  "気の合う仲間との時間が、心の支えになりやすい時期です。無理に人間関係を広げようとせず、今ある大切なつながりを丁寧に育てることが幸運につながります。",
+  "素直な気持ちを伝えることで、相手との距離がぐっと縮まりやすい時期です。誤解を恐れず、思っていることを言葉にしてみると良い流れが生まれるでしょう。",
+  "新しい人との出会いが、今後の人間関係を豊かにしてくれる時期です。普段とは違う場所に顔を出してみると、心地よい関係が自然と築かれていきそうです。",
+  "相手の立場に立って考えることで、これまで以上に信頼関係が深まっていく時期です。聞き役に徹する姿勢が、周囲からの評価にもつながっていくでしょう。",
+  "気を遣いすぎず、自分らしく振る舞うことで、かえって好印象を持たれやすい時期です。無理をしない自然体の姿勢が、良縁を引き寄せてくれそうです。",
+  "過去の縁が思わぬ形で再びつながりやすい時期です。懐かしい人からの連絡や再会が、新しいチャンスをもたらしてくれる可能性があります。",
+  "グループの中でまとめ役を任されやすく、周囲からの信頼が厚くなっていく時期です。多少の負担があっても、それが後々大きな財産になっていくでしょう。",
+];
+
+function dailyFortuneTexts(kin) {
+  const rand = mulberry32(kin * 7919 + 12345);
+  const pick = (arr) => arr[Math.floor(rand() * arr.length) % arr.length];
+  return {
+    love: pick(LOVE_TEMPLATES),
+    work: pick(WORK_TEMPLATES),
+    money: pick(MONEY_TEMPLATES),
+    relationship: pick(RELATIONSHIP_TEMPLATES),
+  };
+}
+
+const TODAY_TEMPLATES = [
+  "今日は直感を信じて行動することで、思わぬ良い出会いやハプニングに恵まれやすい一日になりそうです。",
+  "焦らず落ち着いて過ごすことで、穏やかで満たされた気持ちのまま一日を終えられそうです。",
+  "普段より積極的に話しかけてみると、楽しい会話が自然と弾みやすい一日になりそうです。",
+  "小さなラッキーが重なりやすく、気づけば笑顔の絶えない一日になっていきそうです。",
+  "周囲との協力が思わぬ良い結果につながりやすい、追い風を感じられる一日です。",
+  "自分磨きにぴったりな一日。ちょっとした変化が新しい魅力に気づかせてくれそうです。",
+  "リラックスした雰囲気を心がけることで、良い縁を引き寄せやすい一日になりそうです。",
+  "少し大胆に動いてみることが、印象に残る出会いにつながりやすい一日です。",
+];
+
+function todayFortuneFor(daySignIdx) {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  const rand = mulberry32(month * 131 + day * 7 + daySignIdx * 991);
+  const stars = 1 + Math.floor(rand() * 5);
+  const text = TODAY_TEMPLATES[Math.floor(rand() * TODAY_TEMPLATES.length) % TODAY_TEMPLATES.length];
+  return { month, day, stars, text };
+}
+
+function buildAttendee({ name, birthdate, isSample }) {
+  const p = parseBirthdate(birthdate);
+  const { kin, toneIdx, daySignIdx } = mayaInfo(p.year, p.month, p.day);
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    birthdate,
+    kin,
+    toneIdx,
+    daySignIdx,
+    vec: mayaVector(toneIdx, daySignIdx),
+    isSample: !!isSample,
+    registeredAt: Date.now(),
+  };
+}
+
+const INITIAL_SAMPLES = [
+  buildAttendee({ name: "さくら(サンプル)", birthdate: "1996-05-03", isSample: true }),
+  buildAttendee({ name: "けんじ(サンプル)", birthdate: "1990-11-30", isSample: true }),
+  buildAttendee({ name: "みき(サンプル)", birthdate: "1998-02-25", isSample: true }),
+].map((a, i) => ({ ...a, id: `sample-${i + 1}`, registeredAt: 0 }));
+
+function FortuneMatchApp() {
+  const [attendees, setAttendees] = useState(INITIAL_SAMPLES);
+  const [name, setName] = useState("");
+  const [byear, setByear] = useState("");
+  const [bmonth, setBmonth] = useState("");
+  const [bday, setBday] = useState("");
+  const [reveal, setReveal] = useState(null); // { attendee, top3 }
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [revealStage, setRevealStage] = useState(0);
+  const monthRef = useRef(null);
+  const dayRef = useRef(null);
+
+  useEffect(() => {
+    if (!reveal) return;
+    setRevealStage(0);
+    const timers = [1, 2, 3].map((n) =>
+      setTimeout(() => setRevealStage(n), n * 450)
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [reveal]);
+
+  function handleRegister(e) {
+    e.preventDefault();
+    if (!name.trim() || !byear || !bmonth || !bday) return;
+
+    const birthdate = `${byear}-${String(bmonth).padStart(2, "0")}-${String(bday).padStart(2, "0")}`;
+    const newAttendee = buildAttendee({ name: name.trim(), birthdate, isSample: false });
+    const next = [...attendees, newAttendee];
+    const scored = computeTop3(newAttendee, next);
+    setAttendees(next);
+    setReveal({ attendee: newAttendee, top3: scored });
+    setName("");
+    setByear("");
+    setBmonth("");
+    setBday("");
+  }
+
+  function handleReset() {
+    setAttendees([]);
+    setReveal(null);
+    setConfirmingReset(false);
+  }
+
+  const SAMPLE_NAMES = ["さくら", "ゆかり", "たける", "みき", "しょうた", "あやか", "けんじ", "なつき"];
+
+  function randomBirthdate() {
+    const year = 1985 + Math.floor(Math.random() * 20);
+    const month = 1 + Math.floor(Math.random() * 12);
+    const day = 1 + Math.floor(Math.random() * 28);
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  function handleAddSamples() {
+    const room = MAX_CAPACITY - attendees.length;
+    const count = Math.min(3, room);
+    if (count <= 0) return;
+
+    const additions = Array.from({ length: count }).map(() => {
+      const label = SAMPLE_NAMES[Math.floor(Math.random() * SAMPLE_NAMES.length)];
+      return buildAttendee({ name: `${label}(サンプル)`, birthdate: randomBirthdate(), isSample: true });
+    });
+
+    setAttendees((prev) => [...prev, ...additions]);
+  }
+
+  const emptyBulkRow = () => ({ name: "", byear: "", bmonth: "", bday: "" });
+  const [bulkRows, setBulkRows] = useState(Array.from({ length: 5 }, emptyBulkRow));
+  const bulkMonthRefs = useRef([]);
+  const bulkDayRefs = useRef([]);
+
+  function updateBulkRow(idx, field, value) {
+    setBulkRows((rows) => rows.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
+  }
+
+  function handleBulkRegister(e) {
+    e.preventDefault();
+    const validRows = bulkRows.filter((r) => r.name.trim() && r.byear && r.bmonth && r.bday);
+    if (validRows.length === 0) return;
+
+    const room = MAX_CAPACITY - attendees.length;
+    const toAdd = validRows.slice(0, room).map((r) =>
+      buildAttendee({
+        name: r.name.trim(),
+        birthdate: `${r.byear}-${String(r.bmonth).padStart(2, "0")}-${String(r.bday).padStart(2, "0")}`,
+        isSample: false,
+      })
+    );
+
+    const next = [...attendees, ...toAdd];
+    setAttendees(next);
+    setBulkRows(Array.from({ length: 5 }, emptyBulkRow));
+
+    const last = toAdd[toAdd.length - 1];
+    if (last) setReveal({ attendee: last, top3: computeTop3(last, next) });
+  }
+
+  const full = attendees.length >= MAX_CAPACITY;
+
+  return (
+    <div
+      className="min-h-screen w-full"
+      style={{
+        background:
+          "radial-gradient(circle at 20% 0%, #241a3f 0%, #150f27 55%, #0f0a1d 100%)",
+        color: "#F3EDE3",
+        fontFamily: "'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif",
+      }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
+        .serif-jp { font-family: 'Shippori Mincho', serif; }
+        @keyframes riseIn {
+          from { opacity: 0; transform: translateY(14px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .rise { animation: riseIn 0.5s ease forwards; }
+        select option { color: #150F27; }
+      `}</style>
+
+      <div className="max-w-5xl mx-auto px-5 py-8 md:py-12">
+        {/* ヘッダー */}
+        <header className="flex items-center justify-between flex-wrap gap-3 mb-10 pb-6" style={{ borderBottom: "1px solid #3A2E58" }}>
+          <div className="flex items-center gap-3">
+            <span style={{ fontSize: "22px" }}>✨</span>
+            <h1 className="serif-jp text-2xl md:text-3xl tracking-wide" style={{ color: "#F3EDE3" }}>
+              占心 — Fortune Match
+            </h1>
+          </div>
+          <div className="flex items-center gap-2 text-sm" style={{ color: full ? "#E29A9A" : "#C9A24C" }}>
+            <span>👥</span>
+            <span>{attendees.length} / {MAX_CAPACITY} 名 登録済み</span>
+          </div>
+        </header>
+
+        {/* 結果表示 */}
+        <section className="rise">
+          {!reveal ? (
+            <div
+              className="h-full min-h-[240px] flex flex-col items-center justify-center text-center rounded-lg px-6 py-10"
+              style={{ border: "1px dashed #3A2E58", color: "#8477A0" }}
+            >
+              <div className="mb-3" style={{ fontSize: "28px" }}>🌙</div>
+              <p className="serif-jp text-lg mb-1" style={{ color: "#B9AECB" }}>まだ結果はありません</p>
+              <p className="text-sm">お名前と生年月日を登録すると、マヤ暦の運勢と相性の良いお相手TOP3がここに表示されます。</p>
+            </div>
+          ) : (
+            <div className="rounded-lg p-6" style={{ background: "#1B1330", border: "1px solid #3A2E58" }}>
+              <p className="text-sm mb-1" style={{ color: "#8477A0" }}>{reveal.attendee.name} さん</p>
+              <p className="text-xs mb-5" style={{ color: "#8477A0" }}>
+                {formatBirthdate(reveal.attendee.birthdate)}生まれ・マヤ暦 KIN{reveal.attendee.kin}
+                ({TONES[reveal.attendee.toneIdx]}の{DAY_SIGNS[reveal.attendee.daySignIdx]})
+              </p>
+
+              {(() => {
+                const today = todayFortuneFor(reveal.attendee.daySignIdx);
+                return (
+                  <div className="mb-6 px-4 py-3 rounded" style={{ background: "#211A3B", border: "1px solid #3A2E58" }}>
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs" style={{ color: "#C9A24C" }}>{today.month}月{today.day}日の運勢</p>
+                      <p style={{ color: "#C9A24C", letterSpacing: "1px" }}>
+                        {"★".repeat(today.stars)}{"☆".repeat(5 - today.stars)}
+                      </p>
+                    </div>
+                    <p className="text-sm leading-relaxed">{today.text}</p>
+                  </div>
+                );
+              })()}
+
+              <div className="grid sm:grid-cols-2 gap-3 mb-7">
+                {[
+                  { key: "love", label: "恋愛運" },
+                  { key: "work", label: "仕事運" },
+                  { key: "money", label: "金銭運" },
+                  { key: "relationship", label: "対人関係" },
+                ].map(({ key, label }) => (
+                  <div key={key} className="px-4 py-3 rounded" style={{ background: "#211A3B", border: "1px solid #3A2E58" }}>
+                    <p className="text-xs mb-1" style={{ color: "#C9A24C" }}>{label}</p>
+                    <p className="text-sm leading-relaxed">{dailyFortuneTexts(reveal.attendee.kin)[key]}</p>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-sm mb-3" style={{ color: "#8477A0" }}>相性の良いお相手 TOP3</p>
+
+              {reveal.top3.length === 0 ? (
+                <p style={{ color: "#8477A0" }}>まだ他に登録者がいません。次のお客様の登録をお待ちください。</p>
+              ) : (
+                <div className="space-y-3">
+                  {reveal.top3.map((m, idx) => (
+                    revealStage > idx && (
+                      <div
+                        key={m.id}
+                        className="rise flex items-center justify-between px-4 py-3 rounded"
+                        style={{
+                          background: idx === 0 ? "#2E2350" : "#211A3B",
+                          border: idx === 0 ? "1px solid #C9A24C" : "1px solid #3A2E58",
+                        }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span
+                            className="serif-jp text-lg w-7 h-7 rounded-full flex items-center justify-center"
+                            style={{
+                              background: idx === 0 ? "#C9A24C" : "#3A2E58",
+                              color: idx === 0 ? "#150F27" : "#F3EDE3",
+                            }}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span className="text-base">{m.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5" style={{ color: "#E8B4BC" }}>
+                          <span>❤️</span>
+                          <span className="font-medium">{m.score}%</span>
+                        </div>
+                      </div>
+                    )
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={() => setReveal(null)}
+                className="mt-6 text-sm underline"
+                style={{ color: "#8477A0" }}
+              >
+                閉じて次のお客様を登録する
+              </button>
+            </div>
+          )}
+        </section>
+
+        {/* 登録フォーム */}
+        <section className="mt-10 rise">
+          <h2 className="serif-jp text-lg mb-4 flex items-center gap-2" style={{ color: "#C9A24C" }}>
+            <span>📅</span>
+            占い結果を登録
+          </h2>
+
+          <form onSubmit={handleRegister} className="space-y-4">
+            <div>
+              <label className="block text-sm mb-1" style={{ color: "#B9AECB" }}>
+                お客様のお名前
+              </label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="例）田中 ゆかり"
+                disabled={full}
+                className="w-full px-3 py-2 rounded outline-none"
+                style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1 flex items-center gap-1" style={{ color: "#B9AECB" }}>
+                <span>📅</span> 生年月日
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <select
+                  value={byear}
+                  onChange={(e) => {
+                    setByear(e.target.value);
+                    if (e.target.value) monthRef.current?.focus();
+                  }}
+                  disabled={full}
+                  className="w-full px-2 py-2 rounded outline-none"
+                  style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                >
+                  <option value="">年</option>
+                  {YEAR_OPTIONS.map((y) => (
+                    <option key={y} value={y}>{y}年</option>
+                  ))}
+                </select>
+                <select
+                  ref={monthRef}
+                  value={bmonth}
+                  onChange={(e) => {
+                    setBmonth(e.target.value);
+                    if (e.target.value) dayRef.current?.focus();
+                  }}
+                  disabled={full}
+                  className="w-full px-2 py-2 rounded outline-none"
+                  style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                >
+                  <option value="">月</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{m}月</option>
+                  ))}
+                </select>
+                <select
+                  ref={dayRef}
+                  value={bday}
+                  onChange={(e) => setBday(e.target.value)}
+                  disabled={full}
+                  className="w-full px-2 py-2 rounded outline-none"
+                  style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                >
+                  <option value="">日</option>
+                  {Array.from({ length: daysInMonth(byear, bmonth) }, (_, i) => i + 1).map((d) => (
+                    <option key={d} value={d}>{d}日</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={full || !name.trim() || !byear || !bmonth || !bday}
+              className="w-full py-2.5 rounded font-medium transition-opacity disabled:opacity-40"
+              style={{ background: "#C9A24C", color: "#150F27" }}
+            >
+              {full ? "満員です" : "【名前・生年月日を入力】"}
+            </button>
+          </form>
+
+          <button
+            onClick={handleAddSamples}
+            disabled={full}
+            className="mt-3 w-full py-2 rounded text-sm disabled:opacity-40"
+            style={{ background: "transparent", border: "1px dashed #3A2E58", color: "#8477A0" }}
+          >
+            テスト用にサンプルを3件追加する
+          </button>
+        </section>
+
+        {/* 5名まとめて登録(実データ用・サンプルとは別枠) */}
+        <section className="mt-10 pt-8" style={{ borderTop: "1px solid #3A2E58" }}>
+          <h2 className="serif-jp text-lg mb-1 flex items-center gap-2" style={{ color: "#C9A24C" }}>
+            <span>👥</span>
+            実際のお客様を5名まとめて登録
+          </h2>
+          <p className="text-sm mb-4" style={{ color: "#8477A0" }}>
+            テスト用サンプルとは別に、実際のお客様のお名前と生年月日をまとめて登録できます。
+          </p>
+
+          <form onSubmit={handleBulkRegister} className="space-y-4">
+            {bulkRows.map((row, idx) => (
+              <div key={idx} className="grid md:grid-cols-12 gap-2 md:items-end pb-3" style={{ borderBottom: "1px solid #2A2145" }}>
+                <div className="md:col-span-6">
+                  <label className="block text-xs mb-1" style={{ color: "#8477A0" }}>お名前</label>
+                  <input
+                    value={row.name}
+                    onChange={(e) => updateBulkRow(idx, "name", e.target.value)}
+                    placeholder={`お客様${idx + 1}のお名前`}
+                    disabled={full}
+                    className="w-full px-3 py-2 rounded outline-none"
+                    style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                  />
+                </div>
+                <div className="md:col-span-6">
+                  <label className="block text-xs mb-1" style={{ color: "#8477A0" }}>生年月日</label>
+                  <div className="grid grid-cols-3 gap-1">
+                    <select
+                      value={row.byear}
+                      onChange={(e) => {
+                        updateBulkRow(idx, "byear", e.target.value);
+                        if (e.target.value) bulkMonthRefs.current[idx]?.focus();
+                      }}
+                      disabled={full}
+                      className="w-full px-1 py-2 rounded outline-none text-sm"
+                      style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                    >
+                      <option value="">年</option>
+                      {YEAR_OPTIONS.map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                    <select
+                      ref={(el) => (bulkMonthRefs.current[idx] = el)}
+                      value={row.bmonth}
+                      onChange={(e) => {
+                        updateBulkRow(idx, "bmonth", e.target.value);
+                        if (e.target.value) bulkDayRefs.current[idx]?.focus();
+                      }}
+                      disabled={full}
+                      className="w-full px-1 py-2 rounded outline-none text-sm"
+                      style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                    >
+                      <option value="">月</option>
+                      {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                    <select
+                      ref={(el) => (bulkDayRefs.current[idx] = el)}
+                      value={row.bday}
+                      onChange={(e) => updateBulkRow(idx, "bday", e.target.value)}
+                      disabled={full}
+                      className="w-full px-1 py-2 rounded outline-none text-sm"
+                      style={{ background: "#1F1638", border: "1px solid #3A2E58", color: "#F3EDE3" }}
+                    >
+                      <option value="">日</option>
+                      {Array.from({ length: daysInMonth(row.byear, row.bmonth) }, (_, i) => i + 1).map((d) => (
+                        <option key={d} value={d}>{d}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="submit"
+              disabled={full}
+              className="px-5 py-2.5 rounded font-medium disabled:opacity-40"
+              style={{ background: "#C9A24C", color: "#150F27" }}
+            >
+              入力済みのお客様をまとめて登録する
+            </button>
+            <p className="text-xs" style={{ color: "#8477A0" }}>
+              名前・生年月日が揃っている行だけ登録されます。空欄の行は無視されます。
+            </p>
+          </form>
+        </section>
+
+        {/* 登録済みのお客様一覧 */}
+        <section className="mt-10 pt-8" style={{ borderTop: "1px solid #3A2E58" }}>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="serif-jp text-lg flex items-center gap-2" style={{ color: "#C9A24C" }}>
+              <span>👥</span>
+              登録済みのお客様
+            </h2>
+            {attendees.length > 0 && (
+              !confirmingReset ? (
+                <button
+                  onClick={() => setConfirmingReset(true)}
+                  className="text-xs flex items-center gap-1"
+                  style={{ color: "#8477A0" }}
+                >
+                  <span>🔄</span> リセット
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 text-xs">
+                  <span style={{ color: "#E8B4BC" }}>全員削除しますか?</span>
+                  <button onClick={handleReset} style={{ color: "#E8B4BC" }} className="underline">はい</button>
+                  <button onClick={() => setConfirmingReset(false)} style={{ color: "#8477A0" }} className="underline">いいえ</button>
+                </div>
+              )
+            )}
+          </div>
+
+          {attendees.length === 0 ? (
+            <p className="text-sm" style={{ color: "#8477A0" }}>まだ登録されているお客様がいません。</p>
+          ) : (
+            <ul className="space-y-1 max-h-96 overflow-y-auto pr-1">
+              {attendees.slice().reverse().map((a, i) => (
+                <li
+                  key={a.id}
+                  className="text-sm px-3 py-2 rounded flex items-center justify-between gap-2"
+                  style={{ background: "#1B1330" }}
+                >
+                  <span className="truncate">{attendees.length - i}. {a.name}</span>
+                  <span style={{ color: "#8477A0" }} className="truncate">
+                    {formatBirthdate(a.birthdate)}
+                  </span>
+                  <button
+                    onClick={() => setReveal({ attendee: a, top3: computeTop3(a, attendees) })}
+                    className="text-xs shrink-0 underline"
+                    style={{ color: "#C9A24C" }}
+                  >
+                    結果を見る
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<FortuneMatchApp />);
+</script>
+</body>
+</html>
