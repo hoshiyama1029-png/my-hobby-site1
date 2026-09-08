@@ -244,6 +244,7 @@ function FortuneMatchApp() {
   const [revealStage, setRevealStage] = useState(0);
   const monthRef = useRef(null);
   const dayRef = useRef(null);
+  const resultsRef = useRef(null);
 
   useEffect(() => {
     if (!reveal) return;
@@ -252,6 +253,14 @@ function FortuneMatchApp() {
       setTimeout(() => setRevealStage(n), n * 450)
     );
     return () => timers.forEach(clearTimeout);
+  }, [reveal]);
+
+  useEffect(() => {
+    if (!reveal) return;
+    const timer = setTimeout(() => {
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => clearTimeout(timer);
   }, [reveal]);
 
   function handleRegister(e) {
@@ -368,7 +377,7 @@ function FortuneMatchApp() {
         </header>
 
         {/* 結果表示 */}
-        <section className="rise">
+        <section className="rise" ref={resultsRef}>
           {!reveal ? (
             <div
               className="h-full min-h-[240px] flex flex-col items-center justify-center text-center rounded-lg px-6 py-10"
@@ -689,7 +698,10 @@ function FortuneMatchApp() {
                     {formatBirthdate(a.birthdate)}
                   </span>
                   <button
-                    onClick={() => setReveal({ attendee: a, top3: computeTop3(a, attendees) })}
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      setReveal({ attendee: a, top3: computeTop3(a, attendees) });
+                    }}
                     className="text-xs shrink-0 underline"
                     style={{ color: "#C9A24C" }}
                   >
