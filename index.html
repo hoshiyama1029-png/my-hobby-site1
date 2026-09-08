@@ -46,29 +46,20 @@ function formatBirthdate(dateStr) {
   return `${p.year}年${p.month}月${p.day}日`;
 }
 
-// 生年月日からユリウス通日(JDN)を求める
-function toJDN(year, month, day) {
-  const a = Math.floor((14 - month) / 12);
-  const y = year + 4800 - a;
-  const m = month + 12 * a - 3;
-  return (
-    day +
-    Math.floor((153 * m + 2) / 5) +
-    365 * y +
-    Math.floor(y / 4) -
-    Math.floor(y / 100) +
-    Math.floor(y / 400) -
-    32045
-  );
+// 生年月日から「その年を365日固定」とみなした通算日数を求める。
+// 一般的なマヤ暦KIN早見表はうるう年をまたいでも365日/年で計算されているため、
+// この方式に合わせることで実際の早見表・計算例と一致する。
+const NONLEAP_CUM_DAYS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+function pseudoAbsoluteDay(year, month, day) {
+  return year * 365 + NONLEAP_CUM_DAYS[month - 1] + day;
 }
 
 // マヤ暦(ツォルキン)のKINナンバー(1〜260)を算出する。
-// 基準日: JDN584283(神話上の創造日、4 Ahau 8 Cumku)= KIN160 とする一般的なGMT相関に基づく。
+// 基準日: 1975年3月3日 = KIN189(複数の公開されているマヤ暦KIN計算例と照合して校正済み)
 function kinFromDate(year, month, day) {
-  const jdn = toJDN(year, month, day);
-  const REF_JDN = 584283;
-  const REF_KIN_INDEX0 = 159; // KIN160の0始まりインデックス
-  const diff = jdn - REF_JDN;
+  const REF_ABS = pseudoAbsoluteDay(1975, 3, 3);
+  const REF_KIN_INDEX0 = 188; // KIN189の0始まりインデックス
+  const diff = pseudoAbsoluteDay(year, month, day) - REF_ABS;
   const idx0 = (((REF_KIN_INDEX0 + diff) % 260) + 260) % 260;
   return idx0 + 1; // 1〜260
 }
